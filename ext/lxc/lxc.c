@@ -2122,11 +2122,38 @@ container_wait(int argc, VALUE *argv, VALUE self)
     return self;
 }
 
+/*
+ * call-seq:
+ *   LXC.init_log(level)
+ */
+static VALUE
+init_log(VALUE self, VALUE level)
+{
+    int ret;
+    struct lxc_log log;
+
+    log.name = program_invocation_short_name;
+    log.file = "/dev/stderr";
+    log.level = StringValuePtr(level);
+    log.prefix = "lxc";
+    log.quiet = false;
+    log.lxcpath = lxc_get_global_config_item("lxc.lxcpath");
+
+    ret = lxc_log_init(&log);
+
+    if (ret) {
+            rb_raise(Error, "unknown log init error: %d", ret);
+    }
+
+    return Qnil;
+}
+
 void
 Init_lxc(void)
 {
     VALUE LXC = rb_define_module("LXC");
 
+    rb_define_singleton_method(LXC, "init_log", init_log, 1);
     rb_define_singleton_method(LXC, "arch_to_personality",
                                lxc_arch_to_personality, 1);
     rb_define_singleton_method(LXC, "run_command", lxc_run_command, 1);
