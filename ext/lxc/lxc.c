@@ -745,14 +745,13 @@ container_attach(int argc, VALUE *argv, VALUE self)
 {
     int wait;
     long ret;
-    pid_t pid;
+    pid_t pid = 0;
     lxc_attach_options_t *opts;
     struct container_data *data;
-    VALUE block, rb_opts;
+    VALUE block = RUBY_Qnil, rb_opts;
 
-    if (!rb_block_given_p())
-        rb_raise(Error, "no block given");
-    block = rb_block_proc();
+    if (rb_block_given_p())
+        block = rb_block_proc();
 
     rb_scan_args(argc, argv, "01", &rb_opts);
 
@@ -770,8 +769,15 @@ container_attach(int argc, VALUE *argv, VALUE self)
 
     Data_Get_Struct(self, struct container_data, data);
 
-    ret = data->container->attach(data->container, lxc_attach_exec,
-                                  (void *)block, opts, &pid);
+    if (NIL_P(block)) {
+        opts->pass_by = true;
+        ret = data->container->attach(data->container, NULL,
+                                      NULL, opts, &pid);
+    } else {
+        ret = data->container->attach(data->container, lxc_attach_exec,
+                                      (void *)block, opts, &pid);
+    }
+
     if (ret < 0)
         goto out;
 
