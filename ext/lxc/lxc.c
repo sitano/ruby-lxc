@@ -7,6 +7,11 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
+#include <link.h>
+#include <string.h>
+#include <dlfcn.h>
+
+void (*rb_thread_stop_timer_thread_ptr)();
 
 #define SYMBOL(s) ID2SYM(rb_intern(s))
 
@@ -526,6 +531,12 @@ is_integer(VALUE v)
 }
 
 static int
+is_boolean(VALUE v)
+{
+    return (TYPE(v) == T_TRUE || TYPE(v) == T_FALSE);
+}
+
+static int
 is_string(VALUE v)
 {
     return TYPE(v) == T_STRING;
@@ -566,15 +577,18 @@ lxc_attach_free_options(lxc_attach_options_t *opts)
     free(opts);
 }
 
+static pid_t
+lxc_fork(void *payload);
+
 static lxc_attach_options_t *
 lxc_attach_parse_options(VALUE rb_opts)
 {
-    char *error = NULL;
+    const char *error = NULL;
     lxc_attach_options_t default_opts = LXC_ATTACH_OPTIONS_DEFAULT;
     lxc_attach_options_t *opts;
     VALUE rb_attach_flags, rb_namespaces, rb_personality, rb_initial_cwd;
     VALUE rb_uid, rb_gid, rb_env_policy, rb_extra_env_vars, rb_extra_keep_env;
-    VALUE rb_stdin_opt, rb_stdout_opt, rb_stderr_opt;
+    VALUE rb_stdin_opt, rb_stdout_opt, rb_stderr_opt, rb_fork;
 
     opts = malloc(sizeof(*opts));
     if (opts == NULL)
@@ -694,6 +708,18 @@ lxc_attach_parse_options(VALUE rb_opts)
             goto err;
         }
     }
+    rb_fork = rb_hash_aref(rb_opts, SYMBOL("fork"));
+    if (!NIL_P(rb_fork)) {
+        if (is_boolean(rb_fork)) {
+            if (TYPE(rb_fork) == T_TRUE) {
+                opts->fork = lxc_fork;
+                opts->fork_payload = (void *) (intptr_t) getpid();
+            }
+        } else {
+            error = "fork must be an boolean";
+            goto err;
+        }
+    }
 
     return opts;
 
@@ -718,6 +744,111 @@ kill_pid_without_gvl(void *pid)
     kill(*(pid_t *)pid, SIGKILL);
 }
 #endif
+
+static int
+locate_ruby_vm_func_callback(struct dl_phdr_info *info, size_t size, void *data)
+{
+    int p_type, j;
+    Dl_info dt;
+    void *known_addr;
+    intptr_t known_offset;
+    char *f2_ofs;
+    intptr_t f2;
+
+    if (strstr(info->dlpi_name, "libruby.so") == NULL) {
+        return 0;
+    }
+
+    known_addr = (intptr_t)dlsym(RTLD_DEFAULT, "rb_thread_stop");
+    if (!known_addr) {
+        rb_raise(Error, "can't locate known public symbol: rb_thread_stop");
+        return -1;
+    }
+
+    if (!dladdr(known_addr, &dt)) {
+        rb_raise(Error, "can't backtrace known address: rb_thread_stop");
+        return -1;
+    }
+
+    known_offset = known_addr - dt.dli_fbase;
+
+    // probably just dt.dli_fbase also would do.
+    for (j = 0; j < info->dlpi_phnum; j++) {
+        p_type = info->dlpi_phdr[j].p_type;
+        if (p_type != PT_LOAD) {
+            continue;
+        }
+
+        if (info->dlpi_addr + info->dlpi_phdr[j].p_vaddr + known_offset == known_addr) {
+            // virtual address found
+            break;
+        }
+    }
+
+    if (j >= info->dlpi_phnum) {
+        rb_raise(Error, "required program header not found (one that holds rb_thread_stop)");
+        return -1;
+    }
+
+    f2_ofs = getenv("RB_THREAD_STOP_TIMER_THREAD_OFFSET");
+    if (!f2_ofs) {
+        rb_raise(Error, "RB_THREAD_STOP_TIMER_THREAD_OFFSET environment variable is not set. Set it to: nm libruby.so | grep rb_thread_stop_timer_thread");
+        return -1;
+    }
+
+    f2 = strtoll(f2_ofs, NULL, 16);
+    if (f2 < 1) {
+        rb_raise(Error,"RB_THREAD_STOP_TIMER_THREAD_OFFSET value is invalid");
+        return -1;
+    }
+
+    // rb_thread_start_timer_thread_ptr = (void(*)())(info->dlpi_addr + info->dlpi_phdr[j].p_vaddr + f1);
+    rb_thread_stop_timer_thread_ptr = (void(*)())(info->dlpi_addr + info->dlpi_phdr[j].p_vaddr + f2);
+
+    return 0;
+}
+
+static void
+locate_ruby_vm_funcs(void)
+{
+    dl_iterate_phdr(locate_ruby_vm_func_callback, NULL);
+}
+
+/*
+* lxc_fork: forks a process in a Ruby VM compatible manner to allow
+*           it bypassing throughout the USER+PID namespaces.
+*
+*           lxc_fork serves 2 goals:
+*            - the process must have only 1 thread in the middle
+*            - the process must recover correct MT state (GVL+scheduler)
+*/
+static pid_t
+lxc_fork(void *payload)
+{
+    VALUE res;
+    if ((intptr_t)getpid() != (intptr_t)payload) {
+        // This is the hack to recover scheduling thread after fork().
+        // This will fail for intermediate parent - it is fine, ignore it.
+        res = rb_eval_string("$VERBOSE = nil; Process.fork");
+    } else {
+        // First fork() shall destroy process threads, because jumping into
+        // USER NS requires a single-thread only process. Without having
+        // access to the scheduler thread controls that is the best we can do.
+        //
+        // But there is no way to safely cleanup GVL state without calling
+        // gvl_init() so do that with Process.fork().
+        res = rb_eval_string("Process.fork");
+
+        // cleanup only for child
+        if (NIL_P(res)) {
+            // stop timer thread
+            rb_thread_stop_timer_thread_ptr();
+            // now we are alone to proceed
+        }
+    }
+
+    return NIL_P(res) ? 0 : NUM2INT(res);
+}
 
 /*
  * call-seq:
@@ -2262,4 +2393,12 @@ Init_lxc(void)
 #undef LXC_CONTAINER_CONST
 
     Error = rb_define_class_under(LXC, "Error", rb_eStandardError);
+
+    if (!rb_thread_stop_timer_thread_ptr) {
+        locate_ruby_vm_funcs();
+    }
+
+    if (!rb_thread_stop_timer_thread_ptr) {
+        rb_raise(Error, "failed to locate rb_thread_stop_timer_thread()");
+    }
 }

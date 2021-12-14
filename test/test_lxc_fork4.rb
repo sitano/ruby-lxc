@@ -86,6 +86,9 @@ class TestLXCFork < Test::Unit::TestCase
 
     for c in cs do
        pid = measure "attach" do c.attach end
+       # pid = c.attach
+       # ~
+       # pid = Process.fork
 
        putx "attached: #{pid}"
 
