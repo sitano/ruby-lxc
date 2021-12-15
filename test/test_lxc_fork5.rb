@@ -11,7 +11,7 @@ class TestLXCFork < Test::Unit::TestCase
     #   raise 'This test must be run as root'
     # end
 
-    LXC::init_log("ERROR")
+    LXC::init_log("TRACE")
 
     $stdout.sync = true
   end
@@ -36,7 +36,7 @@ class TestLXCFork < Test::Unit::TestCase
     puts "started in #{(t2-t1)/1000000}ms"
 
     t3 = now
-    pid = @container.attach ({ :fork => true })
+    pid = @container.attach ({ :fork => true, :stdin => -1 })
     t4 = now
 
     puts "[#{prefix}] attached: #{pid} in #{(t4-t3)/1000000}ms"

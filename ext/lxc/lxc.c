@@ -685,6 +685,8 @@ lxc_attach_parse_options(VALUE rb_opts)
     if (!NIL_P(rb_stdin_opt)) {
         if (has_file_descriptor(rb_stdin_opt)) {
             opts->stdin_fd = io_fileno(rb_stdin_opt);
+        } else if (is_integer(rb_stdin_opt)) {
+            opts->stdin_fd = NUM2INT(rb_stdin_opt);
         } else {
             error = "stdin object must have a file descriptor";
             goto err;
@@ -694,6 +696,8 @@ lxc_attach_parse_options(VALUE rb_opts)
     if (!NIL_P(rb_stdout_opt)) {
         if (has_file_descriptor(rb_stdout_opt)) {
             opts->stdout_fd = io_fileno(rb_stdout_opt);
+        } else if (is_integer(rb_stdout_opt)) {
+            opts->stdout_fd = NUM2INT(rb_stdout_opt);
         } else {
             error = "stdout object must have a file descriptor";
             goto err;
@@ -703,6 +707,8 @@ lxc_attach_parse_options(VALUE rb_opts)
     if (!NIL_P(rb_stderr_opt)) {
         if (has_file_descriptor(rb_stderr_opt)) {
             opts->stderr_fd = io_fileno(rb_stderr_opt);
+        } else if (is_integer(rb_stderr_opt)) {
+            opts->stderr_fd = NUM2INT(rb_stderr_opt);
         } else {
             error = "stderr object must have a file descriptor";
             goto err;
