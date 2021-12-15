@@ -11,7 +11,7 @@ class TestLXCFork < Test::Unit::TestCase
     #   raise 'This test must be run as root'
     # end
 
-    LXC::init_log("TRACE")
+    LXC::init_log("WARN")
 
     $stdout.sync = true
   end
@@ -27,16 +27,22 @@ class TestLXCFork < Test::Unit::TestCase
   def test_attach
     @name = 'test'
     @container = LXC::Container.new(@name)
-    assert ! @container.running?
 
-    t1 = now
-    @container.start
-    t2 = now
-    assert @container.running?
-    puts "started in #{(t2-t1)/1000000}ms"
+    unless @container.running?
+        t1 = now
+        @container.start
+        t2 = now
+        assert @container.running?
+        puts "started in #{(t2-t1)/1000000}ms"
+    end
 
     t3 = now
-    pid = @container.attach ({ :fork => true, :stdin => -1 })
+    pid = @container.attach ({
+        :fork => true,
+        :stdin => -1,
+        # this actually would not work without namespace & NEWNS but let it be
+        :flags => LXC::LXC_ATTACH_REMOUNT_PROC_SYS | LXC::LXC_ATTACH_DEFAULT
+    })
     t4 = now
 
     puts "[#{prefix}] attached: #{pid} in #{(t4-t3)/1000000}ms"
@@ -56,10 +62,15 @@ class TestLXCFork < Test::Unit::TestCase
       assert ! @container.running?
 
       puts "stopped in #{(t6-t5)/1000000}ms"
+    elsif pid < 0
+      @container.stop
+      raise "error: attach failed"
     else
       puts "[#{prefix}] hello from container"
       puts "[#{prefix}] #{@@shared} is present"
-      t1 = Thread.new do
+      puts "/proc: #{Dir["/proc/**"]}"
+      t = []
+      t << Thread.new do
         i = 0
         puts "hello 1"
         until i > 5
@@ -68,7 +79,7 @@ class TestLXCFork < Test::Unit::TestCase
           i = i + 1
         end
       end
-      t2 = Thread.new do
+      t << Thread.new do
         i = 0
         puts "hello 2"
         until i > 5
@@ -77,11 +88,9 @@ class TestLXCFork < Test::Unit::TestCase
           i = i + 1
         end
       end
-      i = 0
-      until i > 5
+      until ! t.any? { |x| x.alive? }
         puts "+"
         sleep(1)
-        i = i + 1
       end
       # can't call joins as they explicitly switch
       puts "[#{prefix}] exiting from"
