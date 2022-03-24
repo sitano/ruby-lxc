@@ -10,6 +10,8 @@
 #include <link.h>
 #include <string.h>
 #include <dlfcn.h>
+#include <sys/types.h>
+#include <dirent.h>
 
 void (*rb_thread_stop_timer_thread_ptr)();
 
@@ -765,7 +767,7 @@ locate_ruby_vm_func_callback(struct dl_phdr_info *info, size_t size, void *data)
         return 0;
     }
 
-    known_addr = (intptr_t)dlsym(RTLD_DEFAULT, "rb_thread_stop");
+    known_addr = (void *)dlsym(RTLD_DEFAULT, "rb_thread_stop");
     if (!known_addr) {
         rb_raise(Error, "can't locate known public symbol: rb_thread_stop");
         return -1;
@@ -776,7 +778,7 @@ locate_ruby_vm_func_callback(struct dl_phdr_info *info, size_t size, void *data)
         return -1;
     }
 
-    known_offset = known_addr - dt.dli_fbase;
+    known_offset = (uintptr_t)known_addr - (uintptr_t)dt.dli_fbase;
 
     // probably just dt.dli_fbase also would do.
     for (j = 0; j < info->dlpi_phnum; j++) {
@@ -785,7 +787,7 @@ locate_ruby_vm_func_callback(struct dl_phdr_info *info, size_t size, void *data)
             continue;
         }
 
-        if (info->dlpi_addr + info->dlpi_phdr[j].p_vaddr + known_offset == known_addr) {
+        if (info->dlpi_addr + info->dlpi_phdr[j].p_vaddr + known_offset == (uintptr_t)known_addr) {
             // virtual address found
             break;
         }
@@ -821,6 +823,31 @@ locate_ruby_vm_funcs(void)
 }
 
 /*
+* count_threads: returns a number of threads in the process by using proc.
+*/
+static int
+count_threads(void)
+{
+    size_t num = 0;
+    DIR *d = opendir("/proc/self/task");
+
+    if (d) {
+        struct dirent *ent;
+
+        while ((ent = readdir(d)) != NULL) {
+            if (ent->d_name[0] == '.') {
+                continue;
+            }
+            num++;
+        }
+
+        closedir(d);
+    }
+
+    return num;
+}
+
+/*
 * lxc_fork: forks a process in a Ruby VM compatible manner to allow
 *           it bypassing throughout the USER+PID namespaces.
 *
@@ -849,7 +876,21 @@ lxc_fork(void *payload)
         if (NIL_P(res)) {
             // stop timer thread
             rb_thread_stop_timer_thread_ptr();
-            // now we are alone to proceed
+            // timer thread start/stop can race with each other.
+            // stop in some cases does not guarantee the termination.
+            {
+                size_t trial = 0;
+                while (count_threads() > 1) {
+                    if (++ trial >= 10) {
+                        rb_warn("Failed to cleanup Ruby VM thread space: terminating");
+                        // we can't return here. we must destroy an intermediate process.
+                        _exit(-1);
+                    }
+                    usleep(100);
+                    rb_warn("Failed to cleanup Ruby VM thread space: retry=%d", trial);
+                }
+            }
+            // now we are alone to proceed.
         }
     }
 
