@@ -881,11 +881,11 @@ lxc_fork(void *payload)
             {
                 size_t trial = 0;
                 while (count_threads() > 1) {
-                    if (++ trial >= 10) {
+                    if (++ trial >= 1) {
                         rb_warn("Failed to cleanup Ruby VM thread space: terminating");
-                        return -1;
+                        _exit(-1);
                     }
-                    usleep(100);
+                    usleep(1);
                     rb_warn("Failed to cleanup Ruby VM thread space: retry=%d", trial);
                 }
             }
