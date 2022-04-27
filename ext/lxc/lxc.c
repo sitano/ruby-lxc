@@ -887,7 +887,7 @@ lxc_fork(void *payload)
                         _exit(-1);
                     }
                     usleep(100);
-                    rb_warn("Failed to cleanup Ruby VM thread space: retry=%d", trial);
+                    rb_warn("Failed to cleanup Ruby VM thread space: retry=%ld", trial);
                 }
             }
             // now we are alone to proceed.
