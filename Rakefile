@@ -6,6 +6,7 @@ require 'rdoc/task'
 require 'rubygems/package_task'
 
 spec = Gem::Specification.load('ruby-lxc.gemspec')
+
 Gem::PackageTask.new(spec) do |pkg|
 end
 
